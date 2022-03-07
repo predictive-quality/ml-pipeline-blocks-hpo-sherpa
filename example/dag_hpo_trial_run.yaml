@@ -1,0 +1,409 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  Name: dag-orakel-lumileds-hpo
+  namespace: orakel
+spec:
+  serviceAccountName: workflow-pods-lite
+  imagePullSecrets:
+  - name: gitlab-argo-image-pull-secret
+  - name: gitlab-airflow-block-pull-secret
+  volumes:
+  - name: gitlabrunner-gitlabkey-vol
+    secret:
+      secretName: gitlabrunner-gitlabkey
+  - name: s3-config-vol # for 'local' execution
+    secret:
+      secretName: s3-config-secret
+  ttlStrategy:
+    secondsAfterSuccess: 120
+  entrypoint: orakel-lumileds-hpo
+  arguments: # for input in the UI
+    parameters:
+      - name: input_path
+        value: "" 
+      - name: output_path
+        value: ""
+      - name: filename_x
+        value: ""
+      - name: filename_y
+        value: ""
+      - name: shuffle-split-train-test
+        value: "True"
+      - name: test_size-split-train-test
+        value: ""
+      - name: inverse_scaling-feature-scaling
+        value: "False"
+      - name: config-feature-scaling
+        value: "{}"
+      - name: scaler_obj-feature-scaling-x
+        value: ""
+      - name: scaler_obj-feature-scaling-y
+        value: ""
+      - name: method-feature-scaling
+        value: ""
+      - name: stage-feature-selection-pca
+        value: ""
+      - name: inverse_scaling-feature-selection-pca
+        value: "False"
+      - name: filename_x_train
+        value: ""
+      - name: filename_y_train
+        value: ""
+      - name: filename_x_test
+        value: ""
+      - name: filename_y_test
+        value: ""
+      - name: total_variance-feature-selection-pca
+        value: ""
+      - name: pca_object-feature-selection-pca
+        value: ""
+      - name: model-name
+        value: ""
+      - name: units
+        value: ""
+      - name: activations
+        value: ""
+      - name: optimizer_config
+        value: ""
+      - name: callbacks
+        value: ""
+      - name: epochs
+        value: ""
+      - name: buffer_size
+        value: ""
+      - name: loss
+        value: ""
+      - name: metrics
+        value: ""
+      - name: batch_size
+        value: ""
+      - name: columns_y
+        value: ""
+      - name: model_name
+        value: ""
+    
+  templates:
+  - name: orakel-lumileds-hpo
+    dag:
+      tasks:
+      - name: split-train-test
+        templateRef:
+            name: tp-split-train-test
+            template: split-train-test
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.input_path}}"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}1/"
+          - name: shuffle
+            value: "{{workflow.parameters.shuffle-split-train-test}}"
+          - name: test_size
+            value: "{{workflow.parameters.test_size-split-train-test}}"
+          - name: filename_x
+            value: "{{workflow.parameters.filename_x}}"
+          - name: filename_y
+            value: "{{workflow.parameters.filename_y}}"
+
+      - name: feature-scaling-train-x-y
+        dependencies: [split-train-test]
+        templateRef:
+          name: tp-feature-scaling
+          template: feature-scaling
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}1/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}2/"
+          - name: inverse_scaling
+            value: "{{workflow.parameters.inverse_scaling-feature-scaling}}"
+          - name: scaler_obj
+            value: ""
+          - name: filename_list
+            value: "{{workflow.parameters.filename_x_train}},{{workflow.parameters.filename_y_train}}"
+          - name: config
+            value: "{{workflow.parameters.config-feature-scaling}}"
+          - name: method
+            value: "{{workflow.parameters.method-feature-scaling}}"
+
+      - name: copy-objects-1 # x_train.pckl , y_train.pckl für x und y_test.fth
+        dependencies: [feature-scaling-train-x-y]
+        templateRef:
+          name: tp-copy-objects
+          template: copy-objects
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}2/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}1/"
+          - name: file_type
+            value: ".pckl"
+          - name: filenames_list
+            value: ""
+
+      - name: feature-scaling-test-x
+        dependencies: [copy-objects-1]
+        templateRef:
+          name: tp-feature-scaling
+          template: feature-scaling
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}1/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}2/"
+          - name: inverse_scaling
+            value: "{{workflow.parameters.inverse_scaling-feature-scaling}}"
+          - name: filename_list
+            value: "{{workflow.parameters.filename_x_test}}"
+          - name: config
+            value: "{{workflow.parameters.config-feature-scaling}}"
+          - name: scaler_obj
+            value: "{{workflow.parameters.scaler_obj-feature-scaling-x}}"
+          - name: method
+            value: "{{workflow.parameters.method-feature-scaling}}"
+
+      - name: feature-scaling-test-y
+        dependencies: [copy-objects-1]
+        templateRef:
+          name: tp-feature-scaling
+          template: feature-scaling
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}1/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}2/"
+          - name: inverse_scaling
+            value: "{{workflow.parameters.inverse_scaling-feature-scaling}}"
+          - name: filename_list
+            value: "{{workflow.parameters.filename_y_test}}"
+          - name: config
+            value: "{{workflow.parameters.config-feature-scaling}}"
+          - name: scaler_obj
+            value: "{{workflow.parameters.scaler_obj-feature-scaling-y}}"
+          - name: method
+            value: "{{workflow.parameters.method-feature-scaling}}"
+
+      - name: feature-selection-pca-train
+        dependencies: [feature-scaling-test-x,feature-scaling-test-y]
+        templateRef:
+          name: tp-feature-selection-pca
+          template: feature-selection-pca
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}2/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}3/"
+          - name: stage
+            value: "fit"
+          - name: inverse_scaling
+            value: "{{workflow.parameters.inverse_scaling-feature-selection-pca}}"
+          - name: filename_x
+            value: "{{workflow.parameters.filename_x_train}}"
+          - name: filename_y
+            value: "{{workflow.parameters.filename_y_train}}"
+          - name: total_variance
+            value: "{{workflow.parameters.total_variance-feature-selection-pca}}"
+          - name: pca_object
+            value: "{{workflow.parameters.pca_object-feature-selection-pca}}"
+
+      - name: copy-objects-2
+        dependencies: [feature-selection-pca-train]
+        templateRef:
+          name: tp-copy-objects
+          template: copy-objects
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}3/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}2/"
+          - name: file_type
+            value: ".pckl"
+          - name: filenames_list
+            value: "{{workflow.parameters.pca_object-feature-selection-pca}}"
+
+      - name: feature-selection-pca-test
+        dependencies: [copy-objects-2]
+        templateRef:
+          name: tp-feature-selection-pca
+          template: feature-selection-pca
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}2/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}3/"
+          - name: stage
+            value: "transform"
+          - name: inverse_scaling
+            value: "{{workflow.parameters.inverse_scaling-feature-selection-pca}}"
+          - name: filename_x
+            value: "{{workflow.parameters.filename_x_test}}"
+          - name: filename_y
+            value: "{{workflow.parameters.filename_y_test}}"
+          - name: total_variance
+            value: "{{workflow.parameters.total_variance-feature-selection-pca}}"
+          - name: pca_object
+            value: "{{workflow.parameters.pca_object-feature-selection-pca}}"
+
+      - name: feature-scaling-train-x-2
+        dependencies: [feature-selection-pca-test]
+        templateRef:
+          name: tp-feature-scaling
+          template: feature-scaling
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}3/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}4/"
+          - name: inverse_scaling
+            value: "{{workflow.parameters.inverse_scaling-feature-scaling}}"
+          - name: filename_list
+            value: "{{workflow.parameters.filename_x_train}}"
+          - name: scaler_obj
+            value: ""
+          - name: config
+            value: "{{workflow.parameters.config-feature-scaling}}"
+          - name: method
+            value: "{{workflow.parameters.method-feature-scaling}}"
+
+      - name: copy-objects-3
+        dependencies: [feature-scaling-train-x-2]
+        templateRef:
+          name: tp-copy-objects
+          template: copy-objects
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}4/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}3/"
+          - name: file_type
+            value: ".pckl"
+          - name: filenames_list
+            value: ""
+
+      - name: feature-scaling-test-x-2
+        dependencies: [copy-objects-3]
+        templateRef:
+          name: tp-feature-scaling
+          template: feature-scaling
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}3/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}4/"
+          - name: inverse_scaling
+            value: "{{workflow.parameters.inverse_scaling-feature-scaling}}"
+          - name: filename_list
+            value: "{{workflow.parameters.filename_x_test}}"
+          - name: config
+            value: "{{workflow.parameters.config-feature-scaling}}"
+          - name: scaler_obj
+            value: "{{workflow.parameters.scaler_obj-feature-scaling-x}}"
+          - name: method
+            value: "{{workflow.parameters.method-feature-scaling}}"
+
+      - name: copy-objects-4
+        dependencies: [feature-selection-pca-test]
+        templateRef:
+          name: tp-copy-objects
+          template: copy-objects
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}3/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}4/"
+          - name: file_type
+            value: ".fth"
+          - name: filenames_list
+            value: "{{workflow.parameters.filename_y_train}},{{workflow.parameters.filename_y_test}}"
+
+      - name: copy-objects-5
+        dependencies: [copy-objects-4,feature-scaling-test-x-2]
+        templateRef:
+          name: tp-copy-objects
+          template: copy-objects
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}4/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}5/"
+          - name: file_type
+            value: ".fth"
+          - name: filenames_list
+            value: "{{workflow.parameters.filename_x_test}},{{workflow.parameters.filename_y_test}}"
+
+      - name: train-ffnn
+        dependencies: [copy-objects-4]
+        templateRef:
+          name: tp-model-ffnn
+          template: ffnn-fit-dl2
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}4/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}5/"
+          - name: model_name
+            value: "{{workflow.parameters.model_name}}"
+          - name: units
+            value: "{{workflow.parameters.units}}"
+          - name: stage
+            value: "fit"
+          - name: activations
+            value: "{{workflow.parameters.activations}}"
+          - name: optimizer_config
+            value: "{{workflow.parameters.optimizer_config}}"
+          - name: callbacks
+            value: "{{workflow.parameters.callbacks}}"
+          - name: epochs
+            value: "{{workflow.parameters.epochs}}"
+          - name: buffer_size
+            value: "{{workflow.parameters.buffer_size}}"
+          - name: loss
+            value: "{{workflow.parameters.loss}}"
+          - name: metrics
+            value: "{{workflow.parameters.metrics}}"
+          - name: batch_size
+            value: "{{workflow.parameters.batch_size}}"
+          - name: filename_x
+            value: "{{workflow.parameters.filename_x_train}}"
+          - name: filename_y
+            value: "{{workflow.parameters.filename_y_train}}"
+          - name: columns_y
+            value: "{{workflow.parameters.columns_y}}"
+
+      - name: evaluate-ffnn
+        dependencies: [train-ffnn,copy-objects-5]
+        templateRef:
+          name: tp-model-ffnn
+          template: ffnn-evaluate-dl2
+        arguments:
+          parameters:
+          - name: input_path
+            value: "{{workflow.parameters.output_path}}5/"
+          - name: output_path
+            value: "{{workflow.parameters.output_path}}"
+          - name: model_name
+            value: "{{workflow.parameters.model_name}}"
+          - name: stage
+            value: "evaluate"
+          - name: metrics
+            value: "{{workflow.parameters.metrics}}"
+          - name: filename_x
+            value: "{{workflow.parameters.filename_x_test}}"
+          - name: filename_y
+            value: "{{workflow.parameters.filename_y_test}}"
+          - name: columns_y
+            value: "{{workflow.parameters.columns_y}}"
